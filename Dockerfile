@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.11-slim
 WORKDIR /app
 # Installa le dipendenze per OpenCV
 RUN apt-get update && apt-get install -y libgl1 libglib2.0-0
