@@ -204,10 +204,14 @@ async def recognize_card(inp: ScannerInput):
         if "data" in data:
             c = data["data"][0]
             return {
-                "found": True, "passcode": passcode, "name": c["name"],
-                "price": get_price(c), "image": c.get("card_images", [{}])[0].get("image_url", ""),
+                "found": True, 
+                "passcode": passcode, 
+                "name": c["name"],
+                "price": get_price(c), 
+                "image": c.get("card_images", [{}])[0].get("image_url", ""),
                 "rarita": c.get("card_sets", [{}])[0].get("set_rarity", "Comune"),
-                "edizione": c.get("card_sets", [{}])[0].get("set_name", "N/A")
+                "edizione": c.get("card_sets", [{}])[0].get("set_name", "N/A"),
+                "archetipo": c.get("archetype", "N/A") # <-- LA MAGIA È QUI
             }
         else:
             return {"found": False, "message": f"Codice {passcode} inesistente nel database YGOPRO."}
