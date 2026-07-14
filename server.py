@@ -5,6 +5,7 @@ import base64
 import re
 import cv2
 import numpy as np
+import json
 from io import BytesIO
 from PIL import Image, ImageOps
 from fastapi import FastAPI, APIRouter
@@ -58,10 +59,14 @@ class DeckInput(BaseModel):
     mode: str = "Basic"
     tema: str = ""
 
+# NUOVO MODELLO: DECK BUILDER PRO
+class ProDeckInput(BaseModel):
+    tema: str
+
 class ScannerInput(BaseModel):
     base64_image: str
 
-# NUOVO MODELLO PER ARRICCHIMENTO
+# MODELLO PER ARRICCHIMENTO
 class EnrichInput(BaseModel):
     cardName: str
     existingData: dict
@@ -81,7 +86,7 @@ async def root_check(): return {"status": "OK", "message": "YuGi DeckBuilder PRO
 @api.get("/")
 async def api_check(): return {"status": "OK"}
 
-# --- ROTTA DECK BUILDER ---
+# --- ROTTA DECK BUILDER CLASSICO ---
 @api.post("/deck/generate")
 async def generate_deck(inp: DeckInput):
     tema_clean = inp.tema.lower().strip()
@@ -91,7 +96,88 @@ async def generate_deck(inp: DeckInput):
             return await build_perfect_deck(recipe)
     return await build_smart_deck(inp.tema, is_comp)
 
-# --- NUOVA ROTTA ARRICCHIMENTO GEMINI ---
+# --- NUOVA ROTTA: DECK BUILDER PRO (TOURNAMENT READY) ---
+@api.post("/deck/generate-pro")
+async def generate_pro_deck(inp: ProDeckInput):
+    try:
+        # 1. Chiediamo a Gemini la lista da torneo in JSON
+        prompt = f"""
+        Sei un Campione del Mondo di Yu-Gi-Oh! TCG. 
+        Crea la decklist competitiva perfetta (Tier 1/Tournament Ready) aggiornata al meta attuale per l'archetipo "{inp.tema}".
+        Includi le migliori staple e handtraps del formato (es. Ash Blossom, Nibiru, ecc. a seconda della sinergia).
+        Rispondi SOLO in formato JSON puro, nessuna formattazione markdown, nessun testo fuori dal JSON.
+        I nomi delle carte DEVONO essere i nomi ESATTI in inglese.
+        Struttura obbligatoria:
+        {{
+            "strategy": "Spiega in 3 righe come si gioca il mazzo nel meta attuale.",
+            "main": {{"Nome Esatto Carta": quantita, "Altra Carta": quantita}},
+            "extra": {{"Nome Esatto Carta": quantita}}
+        }}
+        """
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        
+        text = response.text.replace('```json', '').replace('```', '').strip()
+        deck_data = json.loads(text)
+        
+        main_deck = []
+        extra_deck = []
+        missing_list = []
+        costo = 0.0
+
+        # 2. Funzione per recuperare i dati reali da YGOPRODeck
+        def fetch_and_append(card_name, qty, is_extra):
+            nonlocal costo
+            try:
+                # Tentativo 1: Nome Esatto
+                res = requests.get(YGOPRO_API, params={"name": card_name})
+                if res.status_code != 200:
+                    # Tentativo 2: Ricerca parziale (se Gemini ha abbreviato il nome)
+                    res = requests.get(YGOPRO_API, params={"fname": card_name})
+                
+                if res.status_code == 200 and "data" in res.json():
+                    c = res.json()["data"][0]
+                    prezzo = get_price(c)
+                    card_obj = {
+                        "passcode": str(c["id"]),
+                        "nome_carta": c["name"],
+                        "immagine": c.get("card_images", [{}])[0].get("image_url", ""),
+                        "quantita": qty,
+                        "posseduta": 0,
+                        "prezzo_unitario": prezzo
+                    }
+                    if is_extra:
+                        extra_deck.append(card_obj)
+                    else:
+                        main_deck.append(card_obj)
+                    
+                    costo += round(qty * prezzo, 2)
+                    missing_list.append({**card_obj, "mancanti": qty, "subtotale": round(qty * prezzo, 2)})
+            except Exception as e:
+                print(f"Errore recupero carta {card_name}: {e}")
+
+        # 3. Trasformiamo la "mente" di Gemini in dati reali
+        for nome, q in deck_data.get("main", {}).items():
+            fetch_and_append(nome, q, False)
+            
+        for nome, q in deck_data.get("extra", {}).items():
+            fetch_and_append(nome, q, True)
+
+        return {
+            "main_deck": main_deck, 
+            "extra_deck": extra_deck, 
+            "missing": missing_list, 
+            "costo_totale_stimato": round(costo, 2), 
+            "strategy": deck_data.get("strategy", "Nessuna strategia fornita."), 
+            "ok": True
+        }
+
+    except Exception as e:
+        return {"ok": False, "strategy": f"Errore AI: {str(e)}", "main_deck": [], "extra_deck": [], "missing": [], "costo_totale_stimato": 0}
+
+# --- ROTTA ARRICCHIMENTO GEMINI ---
 @api.post("/gemini/enrich")
 async def enrich_card(inp: EnrichInput):
     try:
@@ -107,7 +193,6 @@ async def enrich_card(inp: EnrichInput):
             contents=prompt
         )
         text = response.text.replace('```json', '').replace('```', '').strip()
-        import json
         return json.loads(text)
     except Exception as e:
         return {"error": str(e)}
