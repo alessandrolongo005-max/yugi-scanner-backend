@@ -121,11 +121,7 @@ async def generate_pro_deck(inp: ProDeckInput):
         )
         
         text = response.text.replace('```json', '').replace('```', '').strip()
-        
-        # FIX JSON: Pialliamo via eventuali "a capo" (newlines) non supportati dal parser JSON
         text = text.replace('\n', ' ').replace('\r', '')
-        
-        # Aggiunto strict=False per tollerare meglio piccole sbavature di formattazione
         deck_data = json.loads(text, strict=False)
         
         main_deck = []
@@ -137,10 +133,8 @@ async def generate_pro_deck(inp: ProDeckInput):
         def fetch_and_append(card_name, qty, is_extra):
             nonlocal costo
             try:
-                # Tentativo 1: Nome Esatto
                 res = requests.get(YGOPRO_API, params={"name": card_name})
                 if res.status_code != 200:
-                    # Tentativo 2: Ricerca parziale (se Gemini ha abbreviato il nome)
                     res = requests.get(YGOPRO_API, params={"fname": card_name})
                 
                 if res.status_code == 200 and "data" in res.json():
@@ -287,7 +281,7 @@ async def build_smart_deck(tema, is_comp):
 
     return {"main_deck": main_deck, "extra_deck": extra_deck, "missing": missing_list, "costo_totale_stimato": round(costo, 2), "strategy": f"Mazzo generato. Main: {carte_nel_main}, Extra: {carte_nel_extra}.", "ok": True}
 
-# --- ROTTA SCANNER DEFINITIVA: INTEGRAZIONE GEMINI VISION (NUOVO SDK) ---
+# --- ROTTA SCANNER DEFINITIVA: INTEGRAZIONE GEMINI VISION + SET CODE ---
 @api.post("/scanner/recognize")
 async def recognize_card(inp: ScannerInput):
     try:
@@ -296,38 +290,81 @@ async def recognize_card(inp: ScannerInput):
         img_pil = Image.open(BytesIO(image_data))
         img_pil = ImageOps.exif_transpose(img_pil)
         
-        # 2. Inviamo a Gemini usando la nuova sintassi
+        # 2. Inviamo a Gemini con richiesta del Passcode E del Set Code in JSON
+        prompt_scanner = """
+        Sei un esperto classificatore di carte Yu-Gi-Oh!.
+        Analizza l'immagine della carta fornita e individua DUE informazioni fondamentali:
+        1. "passcode": Il codice numerico a 8 cifre stampato nell'angolo in basso a sinistra.
+        2. "set_code": Il codice dell'espansione alfanumerico stampato appena sotto l'immagine della carta a destra (es. LOB-EN001, SDY-046, CT13-IT008). Se non riesci a leggerlo, lascia il campo vuoto "".
+
+        Rispondi SOLO in formato JSON puro, nessuna formattazione markdown. Esempio esatto:
+        {"passcode": "89631139", "set_code": "LOB-EN001"}
+        """
         response = client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=[
-                "Leggi il codice a 8 cifre che si trova nell'angolo in basso a sinistra della carta Yu-Gi-Oh!. Rispondi SOLO con il numero a 8 cifre, nessun altro testo.",
-                img_pil
-            ]
+            contents=[prompt_scanner, img_pil]
         )
         
-        passcode = response.text.strip()
-        # Pulizia extra nel caso Gemini rispondesse con testo aggiuntivo
-        passcode = re.sub(r'[^0-9]', '', passcode)
+        text = response.text.replace('```json', '').replace('```', '').strip()
+        text = text.replace('\n', ' ').replace('\r', '')
+        
+        try:
+            ai_data = json.loads(text, strict=False)
+            raw_passcode = str(ai_data.get("passcode", ""))
+            set_code_ai = str(ai_data.get("set_code", "")).upper().strip()
+        except Exception:
+            # Fallback se non risponde in JSON per qualche motivo
+            raw_passcode = response.text.strip()
+            set_code_ai = ""
+
+        passcode = re.sub(r'[^0-9]', '', raw_passcode)
         
         if len(passcode) < 7:
-            return {"found": False, "message": f"Gemini non ha trovato il codice. Risposta: {passcode}"}
+            return {"found": False, "message": f"Gemini non ha trovato un codice valido. Risposta IA: {response.text}"}
             
-        # 3. API YGOPRO (tutto uguale)
+        # 3. Interrogazione API YGOPRO (cerchiamo prima in italiano)
         res = requests.get(YGOPRO_API, params={"id": passcode, "language": "it"})
         data = res.json()
         if "data" not in data:
+            # Se non c'è in italiano, proviamo in inglese
             data = requests.get(YGOPRO_API, params={"id": passcode}).json()
             
         if "data" in data:
             c = data["data"][0]
+            
+            # 4. Ricerca intelligente del Set specifico e Ristampa
+            best_set = None
+            if set_code_ai and "card_sets" in c:
+                for s in c["card_sets"]:
+                    # Se Gemini legge "LOB-EN001", cerchiamo un match nel database
+                    if set_code_ai in str(s.get("set_code", "")).upper():
+                        best_set = s
+                        break
+            
+            # Piano B: se non riusciamo a leggere il Set Code, prendiamo la prima stampa disponibile
+            if not best_set and "card_sets" in c:
+                best_set = c["card_sets"][0]
+            elif "card_sets" not in c:
+                best_set = {}
+                
+            rarita = best_set.get("set_rarity", "Comune")
+            edizione = best_set.get("set_name", "N/A")
+            
+            # Prezzo: diamo priorità al prezzo specifico di QUELLA RISTAMPA, sennò fallback al prezzo generico
+            set_price = best_set.get("set_price")
+            if set_price and float(set_price) > 0:
+                prezzo_finale = float(set_price)
+            else:
+                prezzo_finale = get_price(c)
+
             return {
                 "found": True, 
                 "passcode": passcode, 
                 "name": c["name"],
-                "price": get_price(c), 
+                "price": prezzo_finale, 
                 "image": c.get("card_images", [{}])[0].get("image_url", ""),
-                "rarita": c.get("card_sets", [{}])[0].get("set_rarity", "Comune"),
-                "edizione": c.get("card_sets", [{}])[0].get("set_name", "N/A"),
+                "rarita": rarita,
+                "edizione": edizione,
                 "archetipo": c.get("archetype", "N/A")
             }
         else:
