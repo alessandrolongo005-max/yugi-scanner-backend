@@ -61,6 +61,11 @@ class DeckInput(BaseModel):
 class ScannerInput(BaseModel):
     base64_image: str
 
+# NUOVO MODELLO PER ARRICCHIMENTO
+class EnrichInput(BaseModel):
+    cardName: str
+    existingData: dict
+
 def assegna_destinazione_carta(card_type):
     for keyword in EXTRA_KEYWORDS:
         if keyword in card_type: return "EXTRA"
@@ -85,6 +90,27 @@ async def generate_deck(inp: DeckInput):
         if key in tema_clean or (key == "neos" and "eroe" in tema_clean):
             return await build_perfect_deck(recipe)
     return await build_smart_deck(inp.tema, is_comp)
+
+# --- NUOVA ROTTA ARRICCHIMENTO GEMINI ---
+@api.post("/gemini/enrich")
+async def enrich_card(inp: EnrichInput):
+    try:
+        prompt = f"""
+        Sei un esperto del gioco di carte Yu-Gi-Oh!. 
+        Analizza questa carta: "{inp.cardName}". 
+        Dati parziali API: {str(inp.existingData)}.
+        Restituisci un oggetto JSON con: 'effect', 'rarity', 'description'.
+        Rispondi SOLO con il JSON puro.
+        """
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        text = response.text.replace('```json', '').replace('```', '').strip()
+        import json
+        return json.loads(text)
+    except Exception as e:
+        return {"error": str(e)}
 
 async def build_perfect_deck(recipe):
     tutti_gli_id = list(recipe["main"].keys()) + list(recipe["extra"].keys())
@@ -211,7 +237,7 @@ async def recognize_card(inp: ScannerInput):
                 "image": c.get("card_images", [{}])[0].get("image_url", ""),
                 "rarita": c.get("card_sets", [{}])[0].get("set_rarity", "Comune"),
                 "edizione": c.get("card_sets", [{}])[0].get("set_name", "N/A"),
-                "archetipo": c.get("archetype", "N/A") # <-- LA MAGIA È QUI
+                "archetipo": c.get("archetype", "N/A")
             }
         else:
             return {"found": False, "message": f"Codice {passcode} inesistente nel database YGOPRO."}
