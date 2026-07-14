@@ -113,7 +113,7 @@ async def generate_pro_deck(inp: ProDeckInput):
             "main": {{"Nome Esatto Carta": quantita, "Altra Carta": quantita}},
             "extra": {{"Nome Esatto Carta": quantita}}
         }}
-        IMPORTANTE: Il campo "strategy" deve contenere una spiegazione tattica dettagliata del mazzo, ma DEVE essere scritta ESCLUSIVAMENTE in lingua ITALIANA. Non usare l'inglese per la spiegazione.
+        IMPORTANTE: Il campo "strategy" deve contenere una spiegazione tattica dettagliata del mazzo, ma DEVE essere scritta ESCLUSIVAMENTE in lingua ITALIANA. Scrivi tutto il testo su una SINGOLA RIGA continua, senza MAI andare a capo.
         """
         response = client.models.generate_content(
             model='gemini-2.5-flash',
@@ -121,7 +121,12 @@ async def generate_pro_deck(inp: ProDeckInput):
         )
         
         text = response.text.replace('```json', '').replace('```', '').strip()
-        deck_data = json.loads(text)
+        
+        # FIX JSON: Pialliamo via eventuali "a capo" (newlines) non supportati dal parser JSON
+        text = text.replace('\n', ' ').replace('\r', '')
+        
+        # Aggiunto strict=False per tollerare meglio piccole sbavature di formattazione
+        deck_data = json.loads(text, strict=False)
         
         main_deck = []
         extra_deck = []
