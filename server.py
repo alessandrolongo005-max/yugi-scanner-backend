@@ -66,10 +66,14 @@ class ProDeckInput(BaseModel):
 class ScannerInput(BaseModel):
     base64_image: str
 
-# MODELLO PER ARRICCHIMENTO
+# MODELLO PER ARRICCHIMENTO CARTE
 class EnrichInput(BaseModel):
     cardName: str
     existingData: dict
+
+# NUOVO MODELLO PER PRODOTTI SIGILLATI
+class SealedInput(BaseModel):
+    query: str
 
 def assegna_destinazione_carta(card_type):
     for keyword in EXTRA_KEYWORDS:
@@ -96,7 +100,7 @@ async def generate_deck(inp: DeckInput):
             return await build_perfect_deck(recipe)
     return await build_smart_deck(inp.tema, is_comp)
 
-# --- NUOVA ROTTA: DECK BUILDER PRO (TOURNAMENT READY) ---
+# --- ROTTA DECK BUILDER PRO (TOURNAMENT READY) ---
 @api.post("/deck/generate-pro")
 async def generate_pro_deck(inp: ProDeckInput):
     try:
@@ -129,7 +133,6 @@ async def generate_pro_deck(inp: ProDeckInput):
         missing_list = []
         costo = 0.0
 
-        # 2. Funzione per recuperare i dati reali da YGOPRODeck
         def fetch_and_append(card_name, qty, is_extra):
             nonlocal costo
             try:
@@ -158,7 +161,6 @@ async def generate_pro_deck(inp: ProDeckInput):
             except Exception as e:
                 print(f"Errore recupero carta {card_name}: {e}")
 
-        # 3. Trasformiamo la "mente" di Gemini in dati reali
         for nome, q in deck_data.get("main", {}).items():
             fetch_and_append(nome, q, False)
             
@@ -176,6 +178,57 @@ async def generate_pro_deck(inp: ProDeckInput):
 
     except Exception as e:
         return {"ok": False, "strategy": f"Errore AI: {str(e)}", "main_deck": [], "extra_deck": [], "missing": [], "costo_totale_stimato": 0}
+
+# --- NUOVA ROTTA: PRODOTTI SIGILLATI (CON IMMAGINI AUTOMATICHE DA YUGIPEDIA) ---
+@api.post("/sealed/search")
+async def search_sealed(inp: SealedInput):
+    try:
+        # 1. Chiediamo a Gemini di normalizzare il nome per le API di Yugipedia e stimare il prezzo
+        prompt = f"""
+        Analizza questo prodotto sigillato di Yu-Gi-Oh! (box, tin, structure deck, ecc.): "{inp.query}".
+        Restituisci SOLO un JSON puro con:
+        - "name": Nome ufficiale in inglese (es. "Strike of Neos", "Legend of Blue Eyes White Dragon").
+        - "estimated_price": Prezzo stimato attuale in EUR sul mercato dei collezionisti (solo il numero).
+        """
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        text = response.text.replace('```json', '').replace('```', '').strip()
+        text = text.replace('\n', ' ').replace('\r', '')
+        data = json.loads(text, strict=False)
+        
+        official_name = data.get("name", inp.query)
+        
+        # 2. Peschiamo l'immagine ufficiale direttamente da Yugipedia in background
+        image_url = ""
+        try:
+            yugi_api = "https://yugipedia.com/api.php"
+            params = {
+                "action": "query",
+                "prop": "pageimages",
+                "titles": official_name,
+                "format": "json",
+                "pithumbsize": 500
+            }
+            res = requests.get(yugi_api, params=params).json()
+            pages = res.get("query", {}).get("pages", {})
+            for page_id, page_data in pages.items():
+                if "thumbnail" in page_data:
+                    image_url = page_data["thumbnail"]["source"]
+                    break
+        except Exception:
+            pass
+            
+        return {
+            "found": True,
+            "name": official_name,
+            "estimated_price": data.get("estimated_price", 0),
+            "image_url": image_url,
+            "type": "Sealed"
+        }
+    except Exception as e:
+        return {"found": False, "message": str(e)}
 
 # --- ROTTA ARRICCHIMENTO GEMINI ---
 @api.post("/gemini/enrich")
@@ -281,16 +334,14 @@ async def build_smart_deck(tema, is_comp):
 
     return {"main_deck": main_deck, "extra_deck": extra_deck, "missing": missing_list, "costo_totale_stimato": round(costo, 2), "strategy": f"Mazzo generato. Main: {carte_nel_main}, Extra: {carte_nel_extra}.", "ok": True}
 
-# --- ROTTA SCANNER DEFINITIVA: INTEGRAZIONE GEMINI VISION + SET CODE ---
+# --- ROTTA SCANNER DEFINITIVA: INTEGRAZIONE GEMINI VISION + SET CODE + IMMAGINI CORRETTE ---
 @api.post("/scanner/recognize")
 async def recognize_card(inp: ScannerInput):
     try:
-        # 1. Prepariamo l'immagine per Gemini
         image_data = base64.b64decode(inp.base64_image)
         img_pil = Image.open(BytesIO(image_data))
         img_pil = ImageOps.exif_transpose(img_pil)
         
-        # 2. Inviamo a Gemini con richiesta del Passcode E del Set Code in JSON
         prompt_scanner = """
         Sei un esperto classificatore di carte Yu-Gi-Oh!.
         Analizza l'immagine della carta fornita e individua DUE informazioni fondamentali:
@@ -313,35 +364,30 @@ async def recognize_card(inp: ScannerInput):
             raw_passcode = str(ai_data.get("passcode", ""))
             set_code_ai = str(ai_data.get("set_code", "")).upper().strip()
         except Exception:
-            # Fallback se non risponde in JSON per qualche motivo
             raw_passcode = response.text.strip()
             set_code_ai = ""
 
         passcode = re.sub(r'[^0-9]', '', raw_passcode)
         
         if len(passcode) < 7:
-            return {"found": False, "message": f"Gemini non ha trovato un codice valido. Risposta IA: {response.text}"}
+            return {"found": False, "message": f"Gemini non ha trovato un codice valido."}
             
-        # 3. Interrogazione API YGOPRO (cerchiamo prima in italiano)
         res = requests.get(YGOPRO_API, params={"id": passcode, "language": "it"})
         data = res.json()
         if "data" not in data:
-            # Se non c'è in italiano, proviamo in inglese
             data = requests.get(YGOPRO_API, params={"id": passcode}).json()
             
         if "data" in data:
             c = data["data"][0]
             
-            # 4. Ricerca intelligente del Set specifico e Ristampa
+            # Match per l'espansione specifica
             best_set = None
             if set_code_ai and "card_sets" in c:
                 for s in c["card_sets"]:
-                    # Se Gemini legge "LOB-EN001", cerchiamo un match nel database
                     if set_code_ai in str(s.get("set_code", "")).upper():
                         best_set = s
                         break
             
-            # Piano B: se non riusciamo a leggere il Set Code, prendiamo la prima stampa disponibile
             if not best_set and "card_sets" in c:
                 best_set = c["card_sets"][0]
             elif "card_sets" not in c:
@@ -350,19 +396,29 @@ async def recognize_card(inp: ScannerInput):
             rarita = best_set.get("set_rarity", "Comune")
             edizione = best_set.get("set_name", "N/A")
             
-            # Prezzo: diamo priorità al prezzo specifico di QUELLA RISTAMPA, sennò fallback al prezzo generico
             set_price = best_set.get("set_price")
             if set_price and float(set_price) > 0:
                 prezzo_finale = float(set_price)
             else:
                 prezzo_finale = get_price(c)
 
+            # Match esatto dell'immagine dell'artwork corretto (utile per Alt Art)
+            target_image_url = ""
+            for img in c.get("card_images", []):
+                if str(img.get("id")) == str(passcode):
+                    target_image_url = img.get("image_url", "")
+                    break
+            
+            # Fallback alla prima immagine disponibile se non troviamo l'ID esatto
+            if not target_image_url and c.get("card_images"):
+                target_image_url = c["card_images"][0].get("image_url", "")
+
             return {
                 "found": True, 
                 "passcode": passcode, 
                 "name": c["name"],
                 "price": prezzo_finale, 
-                "image": c.get("card_images", [{}])[0].get("image_url", ""),
+                "image": target_image_url,
                 "rarita": rarita,
                 "edizione": edizione,
                 "archetipo": c.get("archetype", "N/A")
