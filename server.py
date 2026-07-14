@@ -113,6 +113,7 @@ async def generate_pro_deck(inp: ProDeckInput):
             "main": {{"Nome Esatto Carta": quantita, "Altra Carta": quantita}},
             "extra": {{"Nome Esatto Carta": quantita}}
         }}
+        IMPORTANTE: Il campo "strategy" deve contenere una spiegazione tattica dettagliata del mazzo, ma DEVE essere scritta ESCLUSIVAMENTE in lingua ITALIANA. Non usare l'inglese per la spiegazione.
         """
         response = client.models.generate_content(
             model='gemini-2.5-flash',
