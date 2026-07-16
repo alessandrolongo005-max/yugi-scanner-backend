@@ -179,7 +179,7 @@ async def generate_pro_deck(inp: ProDeckInput):
     except Exception as e:
         return {"ok": False, "strategy": f"Errore AI: {str(e)}", "main_deck": [], "extra_deck": [], "missing": [], "costo_totale_stimato": 0}
 
-# --- NUOVA ROTTA: PRODOTTI SIGILLATI (CON IMMAGINI AUTOMATICHE DA YUGIPEDIA) ---
+# --- ROTTA PRODOTTI SIGILLATI VECCHIA (MANTENUTA PER SICUREZZA) ---
 @api.post("/sealed/search")
 async def search_sealed(inp: SealedInput):
     try:
@@ -229,6 +229,74 @@ async def search_sealed(inp: SealedInput):
         }
     except Exception as e:
         return {"found": False, "message": str(e)}
+
+# --- NUOVA ROTTA: PRODOTTI SIGILLATI GEMINI DEFINITIVA (RITORNA UN ARRAY PER L'INVENTARIO) ---
+@api.post("/sealed/search-gemini")
+async def search_sealed_gemini(inp: SealedInput):
+    try:
+        prompt = f"""
+        Sei un esperto assistente per un collezionista di Yu-Gi-Oh!
+        Il collezionista sta cercando il prodotto sigillato: "{inp.query}".
+        Devi restituire SOLO un JSON puro con questi dati:
+        - "name": il nome corretto e ufficiale del box in inglese (es. "Power of the Elements Booster Box").
+        - "prezzo": un numero (non stringa) realistico per il mercato attuale in euro (es. 65.00).
+        NON aggiungere testo testuale, NON usare blocchi markdown ```json.
+        """
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt
+        )
+        text = response.text.replace('```json', '').replace('```', '').strip()
+        text = text.replace('\n', ' ').replace('\r', '')
+        data = json.loads(text, strict=False)
+        
+        official_name = data.get("name", inp.query + " Box")
+        prezzo_stimato = float(data.get("prezzo", 50.00))
+        
+        # Peschiamo l'immagine ufficiale direttamente da Yugipedia
+        image_url = "[https://ms.yugipedia.com//4/4b/Booster_Box.png](https://ms.yugipedia.com//4/4b/Booster_Box.png)" # Forziere d'oro come fallback
+        try:
+            yugi_api = "[https://yugipedia.com/api.php](https://yugipedia.com/api.php)"
+            # Togliamo le parole inutili per aiutare Yugipedia a trovare la foto esatta
+            clean_title = official_name.replace(" Booster Box", "").replace(" Box", "").replace(" Booster", "").strip()
+            params = {
+                "action": "query",
+                "prop": "pageimages",
+                "titles": clean_title,
+                "format": "json",
+                "pithumbsize": 500
+            }
+            res = requests.get(yugi_api, params=params).json()
+            pages = res.get("query", {}).get("pages", {})
+            for page_id, page_data in pages.items():
+                if "thumbnail" in page_data:
+                    image_url = page_data["thumbnail"]["source"]
+                    break
+        except Exception:
+            pass
+            
+        # RITORNIAMO UN ARRAY OBBLIGATORIAMENTE, COSI L'APP NON CRASHA E SALVA L'IMMAGINE!
+        return [{
+            "name": official_name,
+            "nome": official_name,
+            "prezzo": prezzo_stimato,
+            "image_url": image_url,
+            "immagine": image_url,
+            "image": image_url,
+            "type": "Sealed"
+        }]
+    except Exception as e:
+        print("Errore rotta search-gemini:", e)
+        # Fallback assoluto che restituisce comunque l'array richiesto dal telefono
+        return [{
+            "name": inp.query + " Box",
+            "nome": inp.query + " Box",
+            "prezzo": 0.00,
+            "image_url": "[https://ms.yugipedia.com//4/4b/Booster_Box.png](https://ms.yugipedia.com//4/4b/Booster_Box.png)",
+            "immagine": "[https://ms.yugipedia.com//4/4b/Booster_Box.png](https://ms.yugipedia.com//4/4b/Booster_Box.png)",
+            "image": "[https://ms.yugipedia.com//4/4b/Booster_Box.png](https://ms.yugipedia.com//4/4b/Booster_Box.png)",
+            "type": "Sealed"
+        }]
 
 # --- ROTTA ARRICCHIMENTO GEMINI ---
 @api.post("/gemini/enrich")
