@@ -230,7 +230,7 @@ async def search_sealed(inp: SealedInput):
     except Exception as e:
         return {"found": False, "message": str(e)}
 
-# --- NUOVA ROTTA: PRODOTTI SIGILLATI GEMINI DEFINITIVA (RITORNA UN ARRAY PER L'INVENTARIO) ---
+# --- NUOVA ROTTA: PRODOTTI SIGILLATI GEMINI DEFINITIVA (RITORNA UN OGGETTO SINGOLO, NON ARRAY!) ---
 @api.post("/sealed/search-gemini")
 async def search_sealed_gemini(inp: SealedInput):
     try:
@@ -254,9 +254,9 @@ async def search_sealed_gemini(inp: SealedInput):
         prezzo_stimato = float(data.get("prezzo", 50.00))
         
         # Peschiamo l'immagine ufficiale direttamente da Yugipedia
-        image_url = "[https://ms.yugipedia.com//4/4b/Booster_Box.png](https://ms.yugipedia.com//4/4b/Booster_Box.png)" # Forziere d'oro come fallback
+        image_url = "https://ms.yugipedia.com//4/4b/Booster_Box.png" # Forziere d'oro come fallback
         try:
-            yugi_api = "[https://yugipedia.com/api.php](https://yugipedia.com/api.php)"
+            yugi_api = "https://yugipedia.com/api.php"
             # Togliamo le parole inutili per aiutare Yugipedia a trovare la foto esatta
             clean_title = official_name.replace(" Booster Box", "").replace(" Box", "").replace(" Booster", "").strip()
             params = {
@@ -275,28 +275,44 @@ async def search_sealed_gemini(inp: SealedInput):
         except Exception:
             pass
             
-        # RITORNIAMO UN ARRAY OBBLIGATORIAMENTE, COSI L'APP NON CRASHA E SALVA L'IMMAGINE!
-        return [{
+        # ⚠️ RITORNIAMO UN OGGETTO SINGOLO (NON UN ARRAY)
+        fake_passcode = f"BOX-{random.randint(100000, 999999)}"
+        return {
+            "found": True,
+            "passcode": fake_passcode,
+            "id": fake_passcode,
+            "nome_carta": official_name,
             "name": official_name,
             "nome": official_name,
+            "prezzo_unitario": prezzo_stimato,
+            "estimated_price": prezzo_stimato,
             "prezzo": prezzo_stimato,
+            "quantita": 1,
             "image_url": image_url,
             "immagine": image_url,
             "image": image_url,
             "type": "Sealed"
-        }]
+        }
     except Exception as e:
         print("Errore rotta search-gemini:", e)
-        # Fallback assoluto che restituisce comunque l'array richiesto dal telefono
-        return [{
+        # Fallback assoluto corazzato (Oggetto Singolo)
+        fake_passcode = f"BOX-{random.randint(100000, 999999)}"
+        return {
+            "found": True,
+            "passcode": fake_passcode,
+            "id": fake_passcode,
+            "nome_carta": inp.query + " Box",
             "name": inp.query + " Box",
             "nome": inp.query + " Box",
+            "prezzo_unitario": 0.00,
+            "estimated_price": 0.00,
             "prezzo": 0.00,
-            "image_url": "[https://ms.yugipedia.com//4/4b/Booster_Box.png](https://ms.yugipedia.com//4/4b/Booster_Box.png)",
-            "immagine": "[https://ms.yugipedia.com//4/4b/Booster_Box.png](https://ms.yugipedia.com//4/4b/Booster_Box.png)",
-            "image": "[https://ms.yugipedia.com//4/4b/Booster_Box.png](https://ms.yugipedia.com//4/4b/Booster_Box.png)",
+            "quantita": 1,
+            "image_url": "https://ms.yugipedia.com//4/4b/Booster_Box.png",
+            "immagine": "https://ms.yugipedia.com//4/4b/Booster_Box.png",
+            "image": "https://ms.yugipedia.com//4/4b/Booster_Box.png",
             "type": "Sealed"
-        }]
+        }
 
 # --- ROTTA ARRICCHIMENTO GEMINI ---
 @api.post("/gemini/enrich")
